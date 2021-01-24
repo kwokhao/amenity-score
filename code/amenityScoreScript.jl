@@ -38,7 +38,7 @@ gpd = pyimport("geopandas")
 ctx = pyimport("contextily")
 
 # common file addresses
-git = "../"
+git = "amenity-score/"
 make_data_path = git * "make_data/"
 data_path = git * "data/"
 
@@ -805,19 +805,23 @@ end
 # MAIN FUNCTION
 ###
 
-function main()
+function main(; output_directory=make_data_path)
+    @show "Loading data..."
     df, ds, dh, dm, dD, hDict = loadData()
     ip = inputStruct(dh=dh, ds=ds, dm=dm, hDict=hDict)
+    @show "Predicting amenity score..."
     resDict, monthRange = predictAmenityScore(
         df, ip, training_start_date=Date(2015, 1),
         n_training_months=2, n_testing_months=1, bootstrap=false)
     
     # output data
+    @show "Generating output CSV..."
     genOutputCSV(df, resDict, monthRange,
-                 n_training_months=2, output_file_name=make_data_path * "amenityscores.csv")
+                 n_training_months=2, output_file_name=output_directory * "amenityscores.csv")
     # save plots
-    generatePlots(resDict, df, monthRange, n_training_months=2)
-    
+    @show "Generating plots..."
+    generatePlots(resDict, df, monthRange, n_training_months=2, output_directory=output_directory)
+    @show "Done!"
 end
 
 
