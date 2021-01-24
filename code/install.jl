@@ -1,3 +1,4 @@
+# first install Julia packages
 using Pkg
 package_list = ["StatsBase", "Statistics", "StatFiles",
                 "CSV", "FileIO", "CSVFiles",
@@ -9,6 +10,7 @@ for pkg in package_list
     Pkg.add(pkg)
 end
 
+# then install Python packages into the container-local environment
 import Conda
 Conda.pip_interop(true)
 py_package_list = ["numpy", "matplotlib", "seaborn", "pandas",

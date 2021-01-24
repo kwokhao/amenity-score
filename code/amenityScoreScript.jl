@@ -779,7 +779,7 @@ function plotWeightsOverTime(resDict, dfP;
     end
     plt.suptitle("Evolution of amenity score weights α over time, \n" *
                  "evaluated at mean fractions of old and young in each HDB block")
-    plt.savefig(output_directory * "ASWeights.png", dpi=300)
+    plt.savefig(output_directory * "$(Date(Dates.now()))ASWeights.png", dpi=300)
     
     nothing
 end
@@ -806,22 +806,24 @@ end
 ###
 
 function main(; output_directory=make_data_path)
-    @show "Loading data..."
+    println("Loading data...")
     df, ds, dh, dm, dD, hDict = loadData()
     ip = inputStruct(dh=dh, ds=ds, dm=dm, hDict=hDict)
-    @show "Predicting amenity score..."
+    println("Predicting amenity score...")
     resDict, monthRange = predictAmenityScore(
         df, ip, training_start_date=Date(2015, 1),
         n_training_months=2, n_testing_months=1, bootstrap=false)
     
     # output data
-    @show "Generating output CSV..."
+    println("Generating output CSV...")
     genOutputCSV(df, resDict, monthRange,
                  n_training_months=2, output_file_name=output_directory * "amenityscores.csv")
     # save plots
-    @show "Generating plots..."
+    println("Generating plots...")
     generatePlots(resDict, df, monthRange, n_training_months=2, output_directory=output_directory)
-    @show "Done!"
+    println("Done!")
+
+    nothing
 end
 
 
