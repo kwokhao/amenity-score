@@ -11,14 +11,23 @@ RUN ln -s /opt/julia-1.5.3/bin/julia /usr/local/bin/julia
 RUN rm julia-1.5.3-linux-x86_64.tar.gz  # cleanup
 
 # 1b. install Python packages
-RUN pip3 install numpy matplotlib seaborn pandas statsmodels
+RUN pip3 install numpy matplotlib seaborn pandas statsmodels geopandas contextily
 
 # 1c. clone the amenity score git repository
 RUN git clone https://github.com/kwokhao/amenity-score.git
-RUN cd amenity-score
+RUN cd amenity-score/code
 
-# 1c. Install Julia packages (do this after Python)
+# 1d. install Julia packages (do this after Python)
 RUN julia install.jl
+
+# 1e. install gpg to decrypt HDB demographics file (encode: gpg -c demog.csv)
+RUN apt-get install -y gpg
+RUN PWD=`cat ../password.txt`
+RUN gpg --batch --passphrase ${PWD} -d ../make_data/demog.csv.gpg > ../make_data/cleanedHDBDemographics.csv
+
+
+# 2. import functions
+RUN julia run.jl
 
 # to copy images: docker cp $container_id:$source_path $destination_path
 

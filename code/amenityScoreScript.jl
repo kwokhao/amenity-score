@@ -1,5 +1,5 @@
 ###
-# Amenity score NLLS v0.3.0 JAN-20-2021
+# Amenity score script v0.3.1 JAN-24-2021
 # ---
 #
 # This is the (current) master file for the amenity score NLLS
@@ -34,10 +34,13 @@ sns = pyimport("seaborn"); sns.set()
 pd = pyimport("pandas")
 sm = pyimport("statsmodels.api")
 np = pyimport("numpy")
-
+gpd = pyimport("geopandas")
+ctx = pyimport("contextily")
 
 # common file addresses
-git = "/Users/kwokhao/GoogleDrive/Research/mrt/amenity-score/"
+git = "../"
+make_data_path = git * "make_data/"
+data_path = git * "data/"
 
 # import subzone path
 subzonePath = git *
@@ -46,15 +49,15 @@ subzonePath = git *
     "MP14_SUBZONE_NO_SEA_PL.shp"
 
 "Imports the relevant data frames."
-function loadData()
+function loadData(; data_path=data_path)
     # import relevant data frames
-    dh = load(string(git, "data/hawker-centres/hawkersCleaned.csv")) |> DataFrame
-    ds = load(string(git, "data/supermarkets/supermarketsCleaned.csv")) |> DataFrame
-    dm = load(string(git, "data/MRTStationCoords.csv")) |> DataFrame
+    dh = load(data_path * "hawker-centres/hawkersCleaned.csv") |> DataFrame
+    ds = load(data_path * "supermarkets/supermarketsCleaned.csv") |> DataFrame
+    dm = load(data_path * "MRTStationCoords.csv") |> DataFrame
     # explicitly label `block` as String, else throws error
-    df = CSV.File(git * "data/Apr012020_FlatsMerged2015-.csv",
+    df = CSV.File(data_path * "Apr012020_FlatsMerged2015-.csv",
                      types=Dict(:block => String)) |> DataFrame
-    dD = load(git * "make_data/cleanedHDBDemographics.csv") |> DataFrame
+    dD = load(make_data_path * "cleanedHDBDemographics.csv") |> DataFrame
     dD = @> dD @select(:postal_code, :fracOld, :fracYoung) unique
     
     # rename postal code, merge with demographic data, drop missing entries
@@ -63,7 +66,7 @@ function loadData()
     dropmissing!(df, disallowmissing=true)
     
     # rescale prices to reasonable numbers
-    df[:p] = df.resale_price / 1e5
+    df[!, :p] = df.resale_price / 1e5
     
     # focus on 3-room, 4-room and 5-room flats
     df = @> df @where(:flat_type .∈ [["3 ROOM", "4 ROOM", "5 ROOM"]])
@@ -71,7 +74,7 @@ function loadData()
     # find opening dates for hawker centres
     compl = [length(x) >= 7 ? tryparse(Int64, x[end-3:end]) :
              1965 for x in dh.EST_ORIGINAL_COMPLETION_DATE]
-    dh[:yr] = [isnothing(x) ? 1965 : x for x in compl]
+    dh[!, :yr] = [isnothing(x) ? 1965 : x for x in compl]
     
     
     # Dictionary mapping year to hawker centres active in that year
@@ -439,25 +442,25 @@ function augmentDf(df, resDict, monthRange; n_training_months=2)
     testMonthRange = monthRange .+ Month(n_training_months)
    
     dfP = @where(df, :month .∈ [testMonthRange]) |> copy
-    dfP[:t] = [findfirst(isequal.(mth, testMonthRange)) for mth in dfP.month]
+    dfP[!, :t] = [findfirst(isequal.(mth, testMonthRange)) for mth in dfP.month]
 
     # extract predicted prices and amenity scores
-    dfP[:pHat] = resDict[:pHat]
-    dfP[:sHawker] = resDict[:xHat][:, 6]
-    dfP[:sSuper] = resDict[:xHat][:, 9]
-    dfP[:sMRT] = resDict[:xHat][:, 12]
+    dfP[!, :pHat] = resDict[:pHat]
+    dfP[!, :sHawker] = resDict[:xHat][:, 6]
+    dfP[!, :sSuper] = resDict[:xHat][:, 9]
+    dfP[!, :sMRT] = resDict[:xHat][:, 12]
 
     # extract regression parameter values
-    dfP[:kappa] = [resDict[:κ][tt] for tt in dfP.t]
-    dfP[:bFloorArea] = [resDict[:β][tt, 2] for tt in dfP.t]
-    dfP[:bRemLease] = [resDict[:β][tt, 3] for tt in dfP.t]
-    dfP[:b4Room] = [resDict[:β][tt, 4] for tt in dfP.t]
-    dfP[:b5Room] = [resDict[:β][tt, 5] for tt in dfP.t]
-    dfP[:aHawker] = [resDict[:β][dfP.t[i], 6] + resDict[:β][dfP.t[i], 7] * dfP.fracOld[i] +
+    dfP[!, :kappa] = [resDict[:κ][tt] for tt in dfP.t]
+    dfP[!, :bFloorArea] = [resDict[:β][tt, 2] for tt in dfP.t]
+    dfP[!, :bRemLease] = [resDict[:β][tt, 3] for tt in dfP.t]
+    dfP[!, :b4Room] = [resDict[:β][tt, 4] for tt in dfP.t]
+    dfP[!, :b5Room] = [resDict[:β][tt, 5] for tt in dfP.t]
+    dfP[!, :aHawker] = [resDict[:β][dfP.t[i], 6] + resDict[:β][dfP.t[i], 7] * dfP.fracOld[i] +
                      resDict[:β][dfP.t[i], 8] * dfP.fracYoung[i] for i=1:size(dfP, 1)]
-    dfP[:aSuper] = [resDict[:β][dfP.t[i], 9] + resDict[:β][dfP.t[i], 10] * dfP.fracOld[i] +
+    dfP[!, :aSuper] = [resDict[:β][dfP.t[i], 9] + resDict[:β][dfP.t[i], 10] * dfP.fracOld[i] +
                     resDict[:β][dfP.t[i], 11] * dfP.fracYoung[i] for i=1:size(dfP, 1)]
-    dfP[:aMRT] = [resDict[:β][dfP.t[i], 12] + resDict[:β][dfP.t[i], 13] * dfP.fracOld[i] +
+    dfP[!, :aMRT] = [resDict[:β][dfP.t[i], 12] + resDict[:β][dfP.t[i], 13] * dfP.fracOld[i] +
                   resDict[:β][dfP.t[i], 14] * dfP.fracYoung[i] for i=1:size(dfP, 1)]
     dfP
 end
@@ -465,7 +468,7 @@ end
 "Generates an output CSV of amenity scores and parameters by resale flat.
 Assumes # of testing months is 1 for now."
 function genOutputCSV(df, resDict, monthRange; n_training_months=2,
-                      output_file_name="/Users/kwokhao/Desktop/amenityscores.csv")
+                      output_file_name=make_data_path * "amenityscores.csv")
     
     @assert n_training_months < 11 "# training months above 11 not supported in
     output CSV generation"
@@ -475,32 +478,6 @@ function genOutputCSV(df, resDict, monthRange; n_training_months=2,
     
 end
 
-"Code to run sliding window procedure"
-function _runWindowRegression(df; load_archived=false)
-
-    FN = git * "make_data/amenityscore.jld2"
-    # load from archive
-    if load_archived
-        @load FN resDict bsDict
-    else
-        resDict, bsDict = predictAmenityScore(df, bootstrap=true)
-        # archive amenity score dictionaries
-        @save FN resDict bsDict
-    end
-
-    
-    # plot changes in marginal travel cost over time
-    dK = Dict(s => bsDict[s][:κ] for s=1:12) |> DataFrame |> Array
-    plt.plot(1:48, mean(dK, dims=2))
-    plt.fill_between(
-        1:48, quantile.(eachrow(dK), 0.1), quantile.(eachrow(dK), 0.9),
-        alpha=0.5, color="C1")
-
-
-    sns.scatterplot(resDict[:xHat][:, 6], dfP.p, style=dfP.flat_type,
-                        hue=dfP.flat_type, alpha=0.5)
-    nothing
-end
 
 ###
 # 5. POST-REGRESSION DIAGNOSTICS
@@ -513,7 +490,8 @@ end
 "Plots pretty fit plot of model predicted prices against realized resale prices"
 function plotFitPlot(model, data; isDataFrame=false, kde=false,
                      output=false, range_restr=false,
-                     customlabel="prices (\$100k)")
+                     customlabel="prices (\$100k)",
+                     output_directory=make_data_path)
     # overlay CCP distributions
     diagLineMax = max(maximum(model), maximum(isDataFrame ? data.p : data))
     incr = diagLineMax / 20
@@ -569,9 +547,11 @@ function plotFitPlot(model, data; isDataFrame=false, kde=false,
                  "and associated scatter plot (right)")
     plt.tight_layout()
     output && plt.savefig(
-        git * "make_data/$(Date(Dates.now()))amenityscore_fitplot_" *
+        output_directory * "$(Date(Dates.now()))amenityscore_fitplot_" *
         """$(replace(customlabel, " " => "_")).png""", dpi=300)
-    plt.show()
+    plt.close()
+    
+    nothing
 end
 
 
@@ -579,7 +559,7 @@ end
 # regression 4-way plot
 "Computes residuals vs. fitted; normal Q-Q; scale-location; and residuals vs.
 leverage plots."
-function regressionValidityPlots(p, fitted, X)
+function regressionValidityPlots(p, fitted, X; output_directory=make_data_path)
 
     # compute residuals
     e = p - fitted
@@ -624,13 +604,16 @@ function regressionValidityPlots(p, fitted, X)
 
     plt.tight_layout()
     plt.savefig(
-        git * "make_data/$(Date(Dates.now()))amenityscore_diagplot.png",
+        output_directory * "$(Date(Dates.now()))amenityscore_diagplot.png",
         dpi=300)
+    plt.close()
+    
+    nothing
 end
 
 
 "Plots the kernel density plot of each amenity score type"
-function plotAmenityScoreKDE(resDict)
+function plotAmenityScoreKDE(resDict; output_directory=make_data_path)
     hawkerscore = resDict[:xHat][:, 6]
     superscore = resDict[:xHat][:, 9]
     mrtscore = resDict[:xHat][:, 12]
@@ -641,18 +624,19 @@ function plotAmenityScoreKDE(resDict)
     plt.legend()
     plt.title("Kernel density plots of component amenity scores")
     plt.tight_layout()
-    plt.savefig(git * "make_data/amenityScoreKDE.png", dpi=300)
+    plt.savefig(output_directory * "amenityScoreKDE.png", dpi=300)
+    plt.close()
+    
+    nothing
 end
 
 
 "Coerces component amenity scores by location into a pandas dataframe and plots
 them on the Singapore map."
-function plotAmenityScoreByLocation(resDict, dfP)
+function plotAmenityScoreByLocation(resDict, dfP; output_directory=make_data_path)
     hawkerscore = resDict[:xHat][:, 6]
     superscore = resDict[:xHat][:, 9]
     mrtscore = resDict[:xHat][:, 12]
-    gpd = pyimport("geopandas")
-    ctx = pyimport("contextily")
     sg = gpd.read_file(subzonePath).to_crs("epsg:4326")  # import subzone "backbone"
     gdfP = gpd.GeoDataFrame(Dict("LON" => dfP.LON,
                                  "LAT" => dfP.LAT,
@@ -670,7 +654,8 @@ function plotAmenityScoreByLocation(resDict, dfP)
     ctx.add_basemap(ax=ax, crs=4326)
     plt.suptitle("Predicted Hawker Amenity Score")
     plt.tight_layout()
-    plt.savefig(git * "make_data/hawkerAmenityScore.png", dpi=300)
+    plt.savefig(output_directory * "hawkerAmenityScore.png", dpi=300)
+    plt.close()
 
     fig, ax = plt.subplots(figsize=(12, 8))
     sg.plot(ax=ax, alpha=0.0)  # to get correct dimensions for Singapore map
@@ -679,7 +664,8 @@ function plotAmenityScoreByLocation(resDict, dfP)
     ctx.add_basemap(ax=ax, crs=4326)
     plt.suptitle("Predicted Supermarket Amenity Score")
     plt.tight_layout()
-    plt.savefig(git * "make_data/superAmenityScore.png", dpi=300)
+    plt.savefig(output_directory * "superAmenityScore.png", dpi=300)
+    plt.close()
 
     fig, ax = plt.subplots(figsize=(12, 8))
     sg.plot(ax=ax, alpha=0.0)  # to get correct dimensions for Singapore map
@@ -688,17 +674,19 @@ function plotAmenityScoreByLocation(resDict, dfP)
     ctx.add_basemap(ax=ax, crs=4326)
     plt.suptitle("Predicted MRT Amenity Score")
     plt.tight_layout()
-    plt.savefig(git * "make_data/mrtAmenityScore.png", dpi=300)
+    plt.savefig(output_directory * "mrtAmenityScore.png", dpi=300)
+    plt.close()
 
+    nothing
 end
 
 "Plots evolution of component amenity scores over time, on aggregate"
-function plotAmenityScoresOverTime(resDict, dfP)
+function plotAmenityScoresOverTime(resDict, dfP; output_directory=make_data_path)
     mAS = [resDict[:xHat][:, 3+3i] for i=1:3]
     namesAS = ["HawkerScore", "SupermarketScore", "MRTScore"]
 
     dPlot = Dict(namesAS[i] => mAS[i] for i=1:3) |> DataFrame
-    dPlot[:t] = dfP.month
+    dPlot[!, :t] = dfP.month
     dPlot2 = @> dPlot groupby(:t) @combine(
         hM=mean(:HawkerScore), sM=mean(:SupermarketScore), mM=mean(:MRTScore),
         h10=quantile(:HawkerScore, 0.1), s10=quantile(:SupermarketScore, 0.1), m10=quantile(:MRTScore, 0.1),
@@ -714,11 +702,11 @@ function plotAmenityScoresOverTime(resDict, dfP)
         ax[i].legend()
     end
     plt.suptitle("Evolution of mean component amenity scores of transacted flats over time")
-    plt.savefig(git * "make_data/amenityScoresOverTime.png", dpi=300)
+    plt.savefig(output_directory * "amenityScoresOverTime.png", dpi=300)
 end
 
 "Plots amenity scores for 3 chosen flats over time"
-function plotFlatAmenityScoreOverTime(dfP)
+function plotFlatAmenityScoreOverTime(dfP; output_directory=make_data_path)
     flatDict = Dict{Int64, DataFrame}()
     postcodes = [50034, 120507, 520283]
     amenities = [:sHawker, :sSuper, :sMRT]
@@ -737,7 +725,7 @@ function plotFlatAmenityScoreOverTime(dfP)
                  "$(flatDict[2].block[1]) $(flatDict[2].street_name[1]), i.e. $(postcodes[2]) (centre),\n" *
                  "and $(flatDict[3].block[1]) $(flatDict[3].street_name[1]), i.e. $(postcodes[3]) (right)")
     plt.tight_layout()
-    plt.savefig(git * "make_data/amenityScorePlotsFor3Flats.png", dpi=300)
+    plt.savefig(output_directory * "amenityScorePlotsFor3Flats.png", dpi=300)
     
 end
 
@@ -746,7 +734,7 @@ end
 "Plots evolution of amenity score weights over time"
 function plotWeightsOverTime(resDict, dfP;
                              bsDict=nothing, bootstrapped=false,
-                             output_file_name="/Users/kwokhao/Desktop/ASWeights.png")
+                             output_directory=make_data_path)
     
     mASW = Vector{Matrix{Float64}}()
     namesASW = ["Hawker Weight", "Supermarket Weight", "MRT Weight"]
@@ -792,22 +780,26 @@ function plotWeightsOverTime(resDict, dfP;
     end
     plt.suptitle("Evolution of amenity score weights α over time, \n" *
                  "evaluated at mean fractions of old and young in each HDB block")
-    plt.savefig(output_file_name, dpi=300)
+    plt.savefig(output_directory * "ASWeights.png", dpi=300)
     
     nothing
 end
 
 
 "Main function generating plots. Assumes # of testing months is 1 for now."
-function generatePlots(resDict, df, monthRange; bsDict=nothing, n_training_months=2)
+function generatePlots(resDict, df, monthRange; bsDict=nothing, n_training_months=2,
+                       output_directory=make_data_path)
     testMonthRange = monthRange .+ Month(n_training_months)
     dfP = @where(df, :month .∈ [testMonthRange]) |> copy
     
-    plotFitPlot(resDict[:pHat], dfP, isDataFrame=true, output=true, kde=false)
-    regressionValidityPlots(dfP.p, resDict[:pHat], resDict[:xHat])
-    plotAmenityScoreKDE(resDict)
-    plotAmenityScoreByLocation(resDict, dfP)
-    plotWeightsOverTime(resDict, dfP, bsDict=bsDict)
+    plotFitPlot(resDict[:pHat], dfP, isDataFrame=true,
+                output=true, kde=false, output_directory=output_directory)
+    regressionValidityPlots(dfP.p, resDict[:pHat], resDict[:xHat],
+                            output_directory=output_directory)
+    plotAmenityScoreKDE(resDict, output_directory=output_directory)
+    plotAmenityScoreByLocation(resDict, dfP, output_directory=output_directory)
+    plotWeightsOverTime(resDict, dfP,
+                        bsDict=bsDict, output_directory=output_directory)
 end
 
 ###
@@ -823,7 +815,7 @@ function main()
     
     # output data
     genOutputCSV(df, resDict, monthRange,
-                 n_training_months=2, output_file_name="/Users/kwokhao/Desktop/amenityscores.csv")
+                 n_training_months=2, output_file_name=make_data_path * "amenityscores.csv")
     # save plots
     generatePlots(resDict, df, monthRange, n_training_months=2)
     
