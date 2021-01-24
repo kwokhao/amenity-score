@@ -47,7 +47,7 @@ sg = gpd.read_file(
     'MP14_SUBZONE_NO_SEA_PL.shp').to_crs(4326)
 
 
-APIKey = "AIzaSyDuk0177fbNsCY5Jr1Z55hVIkE5qg5ZgQU"  # sentient.io API Key for Google Maps
+# APIKey = REDACTED  # sentient.io API Key for Google Maps
 
 
 # compute convenient variables

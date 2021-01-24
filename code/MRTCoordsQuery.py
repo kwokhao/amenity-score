@@ -15,7 +15,7 @@ from requests_futures.sessions import FuturesSession
 # define paths and API Key to be used
 root = '/Users/kwokhao/GoogleDrive/Research/mrt/sentient/'
 git = '/Users/kwokhao/GoogleDrive/Research/mrt/hdb-amenities/'
-APIKeyGoogle = "AIzaSyDuk0177fbNsCY5Jr1Z55hVIkE5qg5ZgQU"  # sentient.io API Key (ends in QU)
+APIKeyGoogle = 'REDACTED'  # sentient.io API Key (ends in QU)
 
 # read csv file of train station names
 dMRT = pd.read_csv(git + "data/train-station-chinese-names.csv")

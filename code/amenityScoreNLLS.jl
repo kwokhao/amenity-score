@@ -45,43 +45,51 @@ subzonePath = git *
     "master-plan-2014-subzone-boundary-no-sea-shp/" *
     "MP14_SUBZONE_NO_SEA_PL.shp"
 
-# import relevant data frames
-ds = load(string(git, "data/supermarkets/supermarketsCleaned.csv")) |> DataFrame
-dh = load(string(git, "data/hawker-centres/hawkersCleaned.csv")) |> DataFrame
-dMRT = load(string(git, "data/MRTStationCoords.csv")) |> DataFrame
-# explicitly label `block` as String, else throws error
-dM = CSV.File(git * "data/Apr012020_FlatsMerged2015-.csv",
-                 types=Dict(:block => String)) |> DataFrame
-dD = load(git * "make_data/cleanedHDBDemographics.csv") |> DataFrame
-dD = @> dD @select(:postal_code, :fracOld, :fracYoung) unique
+"Imports the relevant data frames."
+function loadData()
+    # import relevant data frames
+    dh = load(string(git, "data/hawker-centres/hawkersCleaned.csv")) |> DataFrame
+    ds = load(string(git, "data/supermarkets/supermarketsCleaned.csv")) |> DataFrame
+    dm = load(string(git, "data/MRTStationCoords.csv")) |> DataFrame
+    # explicitly label `block` as String, else throws error
+    df = CSV.File(git * "data/Apr012020_FlatsMerged2015-.csv",
+                     types=Dict(:block => String)) |> DataFrame
+    dD = load(git * "make_data/cleanedHDBDemographics.csv") |> DataFrame
+    dD = @> dD @select(:postal_code, :fracOld, :fracYoung) unique
+    
+    # rename postal code, merge with demographic data, drop missing entries
+    rename!(df, :POSTALCODE => :postal_code)
+    df = @> df leftjoin(dD, on=:postal_code)
+    dropmissing!(df, disallowmissing=true)
+    
+    # rescale prices to reasonable numbers
+    df[:p] = df.resale_price / 1e5
+    
+    # focus on 3-room, 4-room and 5-room flats
+    df = @> df @where(:flat_type .∈ [["3 ROOM", "4 ROOM", "5 ROOM"]])
+    
+    # find opening dates for hawker centres
+    compl = [length(x) >= 7 ? tryparse(Int64, x[end-3:end]) :
+             1965 for x in dh.EST_ORIGINAL_COMPLETION_DATE]
+    dh[:yr] = [isnothing(x) ? 1965 : x for x in compl]
+    
+    
+    # Dictionary mapping year to hawker centres active in that year
+    hDict = Dict{Int64,DataFrame}(
+        yr => @> dh @where(:yr .<= yr)
+        for yr in levels(year.(df.month)))
 
-# rename postal code, merge with demographic data, drop missing entries
-rename!(dM, :POSTALCODE => :postal_code)
-dM = @> dM leftjoin(dD, on=:postal_code)
-dropmissing!(dM, disallowmissing=true)
-
-# rescale prices to reasonable numbers
-dM[:p] = dM.resale_price / 1e5
-
-# focus on 3-room, 4-room and 5-room flats
-dM = @> dM @where(:flat_type .∈ [["3 ROOM", "4 ROOM", "5 ROOM"]])
-
-# find opening dates for hawker centres
-compl = [length(x) >= 7 ? tryparse(Int64, x[end-3:end]) :
-         1965 for x in dh.EST_ORIGINAL_COMPLETION_DATE]
-dh[:yr] = [isnothing(x) ? 1965 : x for x in compl]
-
-
-# Dictionary mapping year to hawker centres active in that year
-const hDict = Dict{Int64,DataFrame}(
-    yr => @> dh @where(:yr .<= yr)
-    for yr in levels(year.(dM.month)))
+    df, dh, ds, dm, dD, hDict
+end
 
 ##
 # 1b. Define useful structs
 # --
 #
-# We define two structs to hold useful information:
+# We define three structs to hold useful information:
+
+# - ~inputStruct~ contains the raw amenity data frames (hawker CSV, supermarket
+#   CSV, etc.) to construct ~distStruct~ and ~dataStruct~.
 # - ~distStruct~ contains distances from flat i to shop j for each amenity type k
 # - ~dataStruct~ contains the prediction target ~p~, or resale price in S$100k,
 #   and various regressors:
@@ -94,14 +102,22 @@ const hDict = Dict{Int64,DataFrame}(
 #   - ~year~: year in which transaction was made
 ##
 
-# struct of pairwise distances
-struct distStruct  # (i, j): distance of flat i from shop j
-    H::Array{Float64, 2}  # hawkers
-    S::Array{Float64, 2}  # supermarkets
-    M::Array{Float64, 2}  # MRT stations
+# struct of input data frames
+@with_kw struct inputStruct
+    dh::DataFrame  # hawker data frame
+    ds::DataFrame  # supermarket data frame
+    dm::DataFrame  # MRT data frame
+    hDict::Dict  # dictionary of hawkers by year
 end
 
-# construct relevant struct of columns in dM
+# struct of pairwise distances
+struct distStruct  # (i, j): distance of flat i from shop j
+    Hawkers::Array{Float64, 2}  # hawkers
+    Supermarkets::Array{Float64, 2}  # supermarkets
+    MRTs::Array{Float64, 2}  # MRT stations
+end
+
+# construct relevant struct of columns in df
 @with_kw struct dataStruct
     p::Vector{Float64}  # vector of apt prices
     floorArea::Vector{Float64}  # vector of floor areas
@@ -183,9 +199,9 @@ function linearLoss(κ, scoreFood, scoreGroceries, scoreMRT;
     # currentParams = ASParams(1.0, κ[1], ones(3)/3)
 
     # compute amenity scores
-    scoreFood = log.(componentAmenityScore(1.0, κ[1], pairwiseDist.H))
-    scoreGroceries = log.(componentAmenityScore(1.0, κ[1], pairwiseDist.S))
-    scoreMRT = log.(componentAmenityScore(1.0, κ[1], pairwiseDist.M))
+    scoreFood = log.(componentAmenityScore(1.0, κ[1], pairwiseDist.Hawkers))
+    scoreGroceries = log.(componentAmenityScore(1.0, κ[1], pairwiseDist.Supermarkets))
+    scoreMRT = log.(componentAmenityScore(1.0, κ[1], pairwiseDist.MRTs))
 
     X = hcat(ones(length(d.p)), d.floorArea, d.remLease, d.fourRoom, d.fiveRoom,
              scoreFood, scoreFood .* d.fracOld, scoreFood .* d.fracYoung,
@@ -212,8 +228,8 @@ end
 ###
 
 "Splits data into training and testing set, 80-20 for now"
-function splitTrainTest(dM, frac=0.8; bootstrap=false)
-    N = nrow(dM)
+function splitTrainTest(df, frac=0.8; bootstrap=false)
+    N = nrow(df)
     if bootstrap
         seq = rand(MersenneTwister(Threads.threadid() + abs(rand(Int))), 1:N, N)
         trainInd = seq[1:floor(Int, N * frac)]
@@ -224,17 +240,20 @@ function splitTrainTest(dM, frac=0.8; bootstrap=false)
         testInd = seq[floor(Int, N * frac) + 1:end]
     end
 
-    train = dM[trainInd, :]
-    test = dM[testInd, :]
+    train = df[trainInd, :]
+    test = df[testInd, :]
     train, test
 end
 
 
 "Given training and testing sets, computes `pairwiseDist` and `data`"
-function prepTrainTest(train::DataFrame, test::DataFrame, t::Date=Date(2019,1,1))
+function prepTrainTest(train::DataFrame, test::DataFrame, t::Date=Date(2019,1,1);
+                       inputStruct)
+    
+    @unpack hDict, ds, dm = inputStruct
 
     yr = year(t)
-        
+
     # extract data from dataframes
     data = dataStruct(
         p=train.p, floorArea=train.floor_area_sqm, remLease=train.remaining_lease,
@@ -247,22 +266,22 @@ function prepTrainTest(train::DataFrame, test::DataFrame, t::Date=Date(2019,1,1)
         fiveRoom=(test.flat_type .== "5 ROOM"),
         fracOld=test.fracOld, fracYoung=test.fracYoung)
 
-    
+
     # compute pairwise distances for training and testing sets
     H = zeros(size(train, 1), size(hDict[yr], 1))  # hawker distances
     S = zeros(size(train, 1), size(ds, 1))  # supermarket distances
-    M = zeros(size(train, 1), size(dMRT, 1))  # MRT distances
+    M = zeros(size(train, 1), size(dm, 1))  # MRT distances
 
     HTest = zeros(size(test, 1), size(hDict[yr], 1))  # hawker distances
     STest = zeros(size(test, 1), size(ds, 1))  # supermarket distances
-    MTest = zeros(size(test, 1), size(dMRT, 1))  # MRT distances
-    
+    MTest = zeros(size(test, 1), size(dm, 1))  # MRT distances
+
     populateDistance!(H, train, hDict[yr])
     populateDistance!(S, train, ds)
-    populateDistance!(M, train, dMRT)
+    populateDistance!(M, train, dm)
     populateDistance!(HTest, test, hDict[yr])
     populateDistance!(STest, test, ds)
-    populateDistance!(MTest, test, dMRT)
+    populateDistance!(MTest, test, dm)
 
     pairwiseDist = distStruct(H, S, M)
     pairwiseDistTest = distStruct(HTest, STest, MTest)
@@ -270,20 +289,22 @@ function prepTrainTest(train::DataFrame, test::DataFrame, t::Date=Date(2019,1,1)
     # years
     # years = Dict(yr => data.year .== yr for yr in unique(data.year)) |> DataFrame
     # @> years names!(Symbol.(["y" * String(yr) for yr in names(years)]))
-    
+
     # yearsTest = Dict(yr => dataTest.year .== yr for yr in unique(dataTest.year)) |> DataFrame
     # @> yearsTest names!(Symbol.(["y" * String(yr) for yr in names(yearsTest)]))
 
-    data, dataTest, pairwiseDist, pairwiseDistTest #, years, yearsTest    
+    data, dataTest, pairwiseDist, pairwiseDistTest #, years, yearsTest
 end
 
 
 "Computes regression performance and coefficients given training and testing set
 for data"
-function computeRegression(train::DataFrame, test::DataFrame, t::Date=Date(2019,1,1); verbose=false)
-    
-    data, dataTest, pairwiseDist, pairwiseDistTest = prepTrainTest(train, test, t)
-    
+function computeRegression(train::DataFrame, test::DataFrame, t::Date=Date(2019,1,1);
+                           inputStruct, verbose=false)
+
+    data, dataTest, pairwiseDist, pairwiseDistTest = prepTrainTest(train, test, t,
+                                                                   inputStruct=inputStruct)
+
     # preallocate arrays
     scoreFood = similar(zeros(size(train, 1)))
     scoreGroceries = similar(scoreFood)
@@ -298,7 +319,7 @@ function computeRegression(train::DataFrame, test::DataFrame, t::Date=Date(2019,
                            d=data, pairwiseDist=pairwiseDist) .^ 2)
     res = optimize(f, κ0, LBFGS())
     κ = res.minimizer[1]
-    
+
     # compute realized (X, β) | θ, R^2 and rmse on training at testing sets
     X, β = linearLoss(
         κ, scoreFood, scoreGroceries, scoreMRT,
@@ -309,7 +330,7 @@ function computeRegression(train::DataFrame, test::DataFrame, t::Date=Date(2019,
     else
         # R2 = 1 - sum((data.p - X*β) .^ 2)/ sum((data.p .- mean(data.p)) .^ 2)
         # rmse = sqrt(mean((data.p - X*β) .^ 2))
-        
+
         XTest, _ = linearLoss(
             κ, scoreFoodTest, scoreGroceriesTest, scoreMRTTest,
             d=dataTest, pairwiseDist=pairwiseDistTest, verbose=true)
@@ -318,33 +339,12 @@ function computeRegression(train::DataFrame, test::DataFrame, t::Date=Date(2019,
         R2Test = 1 - sum((dataTest.p - predPrices) .^ 2) /
             sum((dataTest.p .- mean(dataTest.p)) .^ 2)
         rmseTest = sqrt(mean((dataTest.p - predPrices) .^ 2))
-        
-    
+
+
         return(X, κ, β, predPrices, XTest, R2Test, rmseTest)
-    end    
-end
-
-"Computes bootstrap distribution of parameters for STATIC MODEL for subsequent analysis."
-function bootstrapParameters(S=10; dM=dM)
-    κList = zeros(S)
-    βList = zeros(S, 14)
-    Threads.@threads for s=1:S
-        @show s
-        train, test = splitTrainTest(dM, bootstrap=true)
-        κ, β = computeRegression(train, test)
-        κList[s] = κ
-        βList[s, :] = β
     end
-    κList, βList
 end
 
-"Code to run old procedure"
-function _runStaticRegression(dM)
-    train, test = splitTrainTest(dM, bootstrap=false)
-    κ, β = computeRegression(train, test, verbose=false)
-    K, B = bootstrapParameters()
-    nothing
-end
 
 ###
 # 4a. EXTENSION -- Rolling window analysis
@@ -355,25 +355,29 @@ end
 ###
 
 "Splits data into rolling window, with start specified start date"
-function splitTTWindow(dM, t::Date; bootstrap=false)
+function splitTTWindow(df, t::Date; n_training_months=2, n_testing_months=1, bootstrap=false)
 
-    train = @> dM @where((:month .>= t) .& (:month .< t + Month(2)))
-    test = @> dM @where((:month .>= t + Month(2)) .& (:month .< t + Month(3)))
+    train = @> df @where((:month .>= t) .& (:month .< t + Month(n_training_months)))
+    test = @> df @where((:month .>= t + Month(n_training_months)) .&
+                        (:month .< t + Month(n_training_months + n_testing_months)))
 
     if bootstrap
         train = train[rand(1:nrow(train), nrow(train)), :]
         test = test[rand(1:nrow(test), nrow(test)), :]
     end
-    
+
     train, test
 end
 
 
 "Computes windowed regression and reports evolution of coefficients over time.
 Optionally bootstraps coefficients for each run."
-function computeWindowRegression(dM; S=12, bootstrap=false)
-    # gets valid initialization months
-    monthRange = (dM.month |> minimum):Month(1):((dM.month |> maximum) - Month(2))
+function predictAmenityScore(df, inputStruct; training_start_date=Date(2015, 1),
+                             n_training_months=2, n_testing_months=1, S=12, bootstrap=false)
+    
+    # gets valid testing/training months
+    monthRange = training_start_date:Month(1):(
+            (df.month |> maximum) - Month(n_training_months + n_testing_months - 1))
 
     resDict = Dict{Symbol, Array{Float64, N} where N}(
         :κ => zeros(length(monthRange)),
@@ -382,11 +386,14 @@ function computeWindowRegression(dM; S=12, bootstrap=false)
         :pHat => Vector{Float64}[],
         :xHat => Array{Float64, 2}[]
     )
-    
+
     # initialize regression results
     for i=tqdm(1:length(monthRange))
-        train, test = splitTTWindow(dM, monthRange[i])
-        _, κ, β, predPrices, XTest, R2Test, _ = computeRegression(train, test, monthRange[i], verbose=true)
+        train, test = splitTTWindow(df, monthRange[i])
+        _, κ, β, predPrices, XTest, R2Test, _ =
+            computeRegression(train, test, monthRange[i],
+                              inputStruct=inputStruct,
+                              verbose=true)
         resDict[:κ][i] = κ
         resDict[:β][i, :] = β
         resDict[:R2][i] = R2Test
@@ -394,6 +401,7 @@ function computeWindowRegression(dM; S=12, bootstrap=false)
         resDict[:xHat] = isempty(resDict[:xHat]) ? XTest : vcat(resDict[:xHat], XTest)
     end
 
+    # optionally allow for bootstrap runs to visualize uncertainty in parameter estimates
     if bootstrap
         bsDict = Dict{Int64, Dict{Symbol, Array{Float64, N} where N}}()
         Threads.@threads for s=1:S
@@ -404,7 +412,7 @@ function computeWindowRegression(dM; S=12, bootstrap=false)
                 :pHat => Vector{Float64}[]
             )
             for i=1:length(monthRange)
-                train, test = splitTTWindow(dM, monthRange[i], bootstrap=true)
+                train, test = splitTTWindow(df, monthRange[i], bootstrap=true)
                 _, κ, β, predPrices, _, R2Test, _ = computeRegression(
                     train, test, monthRange[i], verbose=true)
                 bsDict[s][:κ][i] = κ
@@ -413,34 +421,73 @@ function computeWindowRegression(dM; S=12, bootstrap=false)
                 bsDict[s][:pHat] = vcat(bsDict[s][:pHat], predPrices)
             end
         end
-        
-        return resDict, bsDict
+
+        return resDict, bsDict, monthRange
     end
-    
-    resDict
+
+    resDict, monthRange
 end
 
 
+"Filters and augments data frame rows with regression output. Assumes # of
+testing months is 1 for now."
+function augmentDf(df, resDict, monthRange; n_training_months=2)
+    @assert n_training_months < 11 "# training months above 11 not supported in
+    output CSV generation"
+
+    # form a correspondence between months and runs of the algorithm
+    testMonthRange = monthRange .+ Month(n_training_months)
+   
+    dfP = @where(df, :month .∈ [testMonthRange]) |> copy
+    dfP[:t] = [findfirst(isequal.(mth, testMonthRange)) for mth in dfP.month]
+
+    # extract predicted prices and amenity scores
+    dfP[:pHat] = resDict[:pHat]
+    dfP[:sHawker] = resDict[:xHat][:, 6]
+    dfP[:sSuper] = resDict[:xHat][:, 9]
+    dfP[:sMRT] = resDict[:xHat][:, 12]
+
+    # extract regression parameter values
+    dfP[:kappa] = [resDict[:κ][tt] for tt in dfP.t]
+    dfP[:bFloorArea] = [resDict[:β][tt, 2] for tt in dfP.t]
+    dfP[:bRemLease] = [resDict[:β][tt, 3] for tt in dfP.t]
+    dfP[:b4Room] = [resDict[:β][tt, 4] for tt in dfP.t]
+    dfP[:b5Room] = [resDict[:β][tt, 5] for tt in dfP.t]
+    dfP[:aHawker] = [resDict[:β][dfP.t[i], 6] + resDict[:β][dfP.t[i], 7] * dfP.fracOld[i] +
+                     resDict[:β][dfP.t[i], 8] * dfP.fracYoung[i] for i=1:size(dfP, 1)]
+    dfP[:aSuper] = [resDict[:β][dfP.t[i], 9] + resDict[:β][dfP.t[i], 10] * dfP.fracOld[i] +
+                    resDict[:β][dfP.t[i], 11] * dfP.fracYoung[i] for i=1:size(dfP, 1)]
+    dfP[:aMRT] = [resDict[:β][dfP.t[i], 12] + resDict[:β][dfP.t[i], 13] * dfP.fracOld[i] +
+                  resDict[:β][dfP.t[i], 14] * dfP.fracYoung[i] for i=1:size(dfP, 1)]
+    dfP
+end
+
+"Generates an output CSV of amenity scores and parameters by resale flat.
+Assumes # of testing months is 1 for now."
+function genOutputCSV(df, resDict, monthRange; n_training_months=2,
+                      output_file_name="/Users/kwokhao/Desktop/amenityscores.csv")
+    
+    @assert n_training_months < 11 "# training months above 11 not supported in
+    output CSV generation"
+
+    dfP = augmentDf(df, resDict, monthRange, n_training_months=n_training_months)
+    CSV.write(output_file_name, dfP)
+    
+end
+
 "Code to run sliding window procedure"
-function _runWindowRegression(dM; load_archived=false)
+function _runWindowRegression(df; load_archived=false)
 
     FN = git * "make_data/amenityscore.jld2"
     # load from archive
     if load_archived
         @load FN resDict bsDict
     else
-        resDict, bsDict = computeWindowRegression(dM, bootstrap=true)
+        resDict, bsDict = predictAmenityScore(df, bootstrap=true)
         # archive amenity score dictionaries
         @save FN resDict bsDict
     end
 
-
-    # export amenity score + flat characteristics to CSV
-    dMP[:pHat] = resDict[:pHat]
-    dMP[:hawker] = resDict[:xHat][:, 6]
-    dMP[:super] = resDict[:xHat][:, 9]
-    dMP[:MRT] = resDict[:xHat][:, 12]
-    CSV.write("/Users/kwokhao/Desktop/resalepriceswithAS.csv", dMP)
     
     # plot changes in marginal travel cost over time
     dK = Dict(s => bsDict[s][:κ] for s=1:12) |> DataFrame |> Array
@@ -450,8 +497,8 @@ function _runWindowRegression(dM; load_archived=false)
         alpha=0.5, color="C1")
 
 
-    sns.scatterplot(resDict[:xHat][:, 6], dMP.p, style=dMP.flat_type,
-                        hue=dMP.flat_type, alpha=0.5)
+    sns.scatterplot(resDict[:xHat][:, 6], dfP.p, style=dfP.flat_type,
+                        hue=dfP.flat_type, alpha=0.5)
     nothing
 end
 
@@ -459,7 +506,7 @@ end
 # 5. POST-REGRESSION DIAGNOSTICS
 # --
 #
-# Computes the fit plot, histograms of amenity scores by price, etc. 
+# Computes the fit plot, histograms of amenity scores by price, etc.
 ###
 
 
@@ -475,15 +522,15 @@ function plotFitPlot(model, data; isDataFrame=false, kde=false,
     x = (min(minimum(isDataFrame ? data.p : data), minimum(model)):incr:diagLineMax)
     y = β[1] .+ β[2] * x
 
-    
+
 
     # compute binscatter
     # pData, pModel = binscatter(data[:], model[:])
 
     labelToPlot = customlabel
-    
+
     fig, ax = plt.subplots(1, 2, figsize=(12, 6))
-    
+
     if kde
         # kernel density
         sns.kdeplot(model, label="Predicted $(labelToPlot)", ax=ax[1])
@@ -497,7 +544,7 @@ function plotFitPlot(model, data; isDataFrame=false, kde=false,
         ax[1].hist((isDataFrame ? data.p : data), bins=x,
                    alpha=0.5, label="Data $(labelToPlot)")
     end
-    
+
     ax[1].legend()
 
     # plot fit correlations
@@ -508,7 +555,7 @@ function plotFitPlot(model, data; isDataFrame=false, kde=false,
         ax[2].scatter(data, model, alpha=0.05, s=10,
                       color="k", label="Model vs. data $(labelToPlot)")
     end
-    
+
     # ax[2].scatter(pData.values, pModel.values, alpha=1.0,
     #               color="C2", marker="1", s=50,
     #               label="Binscatter: Model vs. Data")
@@ -533,15 +580,15 @@ end
 "Computes residuals vs. fitted; normal Q-Q; scale-location; and residuals vs.
 leverage plots."
 function regressionValidityPlots(p, fitted, X)
-    
+
     # compute residuals
     e = p - fitted
     e_std = e ./ std(e)
     e_r_std = @as rr e_std abs.(rr) sqrt.(rr)
-    
+
     # initialize plot figure
     fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-    
+
     # 1. residuals vs. fitted
     ax[1, 1].scatter(fitted, e, alpha=0.25)
     ax[1, 1].plot(np.unique(fitted), np.poly1d(np.polyfit(fitted, e, 1))(np.unique(fitted)),
@@ -553,7 +600,7 @@ function regressionValidityPlots(p, fitted, X)
     # 2. quantile-quantile plot
     sm.qqplot(e, line="45", ax=ax[1, 2]);
     ax[1, 2].set_title("Normal Q-Q")
-    
+
     # 3. scale-location plot
     ax[2, 1].scatter(fitted, e_r_std, alpha=0.25)
     ax[2, 1].plot(np.unique(fitted), np.poly1d(np.polyfit(fitted, e_r_std, 1))(np.unique(fitted)),
@@ -574,28 +621,11 @@ function regressionValidityPlots(p, fitted, X)
     ax[2, 2].set_xlabel("Leverage")
     ax[2, 2].set_ylabel("Standardized residuals")
     ax[2, 2].set_title("Residuals vs. leverage")
-    
+
     plt.tight_layout()
     plt.savefig(
         git * "make_data/$(Date(Dates.now()))amenityscore_diagplot.png",
         dpi=300)
-end
-
-"Joint plots of two fields in an output data frame. Currently not in use."
-function _plotJointPlotBySize(x=:hawkerscore, y=:mrtscore;
-                             town="BUKIT PANJANG", dOut, output=false)
-    jg = @as z dOut begin
-        @where(z, :flat_type .∈ [["3 ROOM", "4 ROOM", "5 ROOM"]])
-        @where(z, :town .== town)
-        sns.jointplot(z[!, x], z[!, y], hue=z.flat_type,
-                      height=6)
-    end
-    jg.set_axis_labels(String(x), String(y))
-    plt.suptitle("`$(String(x))` and `$(String(y))` for resale flats in $(town) \n by flat size")
-    plt.tight_layout()
-    output && plt.savefig(
-        git * "make_data/$(Date(Dates.now()))amenityscore_jointplot_" *
-        "$(String(y))_on_$(String(x))_$(town).png", dpi=300)
 end
 
 
@@ -617,25 +647,25 @@ end
 
 "Coerces component amenity scores by location into a pandas dataframe and plots
 them on the Singapore map."
-function plotAmenityScoreByLocation(resDict, dMP)
+function plotAmenityScoreByLocation(resDict, dfP)
     hawkerscore = resDict[:xHat][:, 6]
     superscore = resDict[:xHat][:, 9]
     mrtscore = resDict[:xHat][:, 12]
     gpd = pyimport("geopandas")
     ctx = pyimport("contextily")
     sg = gpd.read_file(subzonePath).to_crs("epsg:4326")  # import subzone "backbone"
-    gdMP = gpd.GeoDataFrame(Dict("LON" => dMP.LON,
-                                 "LAT" => dMP.LAT,
-                                 "p" => dMP.p,
-                                 "size" => dMP.flat_type,
+    gdfP = gpd.GeoDataFrame(Dict("LON" => dfP.LON,
+                                 "LAT" => dfP.LAT,
+                                 "p" => dfP.p,
+                                 "size" => dfP.flat_type,
                                  "hawker" => hawkerscore,
                                  "super" => superscore,
                                  "mrt" => mrtscore),
-                            geometry=gpd.points_from_xy(dMP.LON, dMP.LAT), crs="epsg:4326")
+                            geometry=gpd.points_from_xy(dfP.LON, dfP.LAT), crs="epsg:4326")
 
     fig, ax = plt.subplots(figsize=(12, 8))
     sg.plot(ax=ax, alpha=0.0)  # to get correct dimensions for Singapore map
-    gdMP.plot(column="hawker", legend=true, ax=ax,
+    gdfP.plot(column="hawker", legend=true, ax=ax,
               alpha=0.05, markersize=10)
     ctx.add_basemap(ax=ax, crs=4326)
     plt.suptitle("Predicted Hawker Amenity Score")
@@ -644,31 +674,31 @@ function plotAmenityScoreByLocation(resDict, dMP)
 
     fig, ax = plt.subplots(figsize=(12, 8))
     sg.plot(ax=ax, alpha=0.0)  # to get correct dimensions for Singapore map
-    gdMP.plot(column="super", legend=true, ax=ax,
+    gdfP.plot(column="super", legend=true, ax=ax,
               alpha=0.05, markersize=10)
     ctx.add_basemap(ax=ax, crs=4326)
     plt.suptitle("Predicted Supermarket Amenity Score")
     plt.tight_layout()
     plt.savefig(git * "make_data/superAmenityScore.png", dpi=300)
-    
+
     fig, ax = plt.subplots(figsize=(12, 8))
     sg.plot(ax=ax, alpha=0.0)  # to get correct dimensions for Singapore map
-    gdMP.plot(column="mrt", legend=true, ax=ax,
+    gdfP.plot(column="mrt", legend=true, ax=ax,
               alpha=0.05, markersize=10)
     ctx.add_basemap(ax=ax, crs=4326)
     plt.suptitle("Predicted MRT Amenity Score")
     plt.tight_layout()
     plt.savefig(git * "make_data/mrtAmenityScore.png", dpi=300)
-    
+
 end
 
-"Plots evolution of component amenity scores over time"
-function plotAmenityScoresOverTime(resDict, dMP)
+"Plots evolution of component amenity scores over time, on aggregate"
+function plotAmenityScoresOverTime(resDict, dfP)
     mAS = [resDict[:xHat][:, 3+3i] for i=1:3]
     namesAS = ["HawkerScore", "SupermarketScore", "MRTScore"]
-    
+
     dPlot = Dict(namesAS[i] => mAS[i] for i=1:3) |> DataFrame
-    dPlot[:t] = dMP.month
+    dPlot[:t] = dfP.month
     dPlot2 = @> dPlot groupby(:t) @combine(
         hM=mean(:HawkerScore), sM=mean(:SupermarketScore), mM=mean(:MRTScore),
         h10=quantile(:HawkerScore, 0.1), s10=quantile(:SupermarketScore, 0.1), m10=quantile(:MRTScore, 0.1),
@@ -677,7 +707,7 @@ function plotAmenityScoresOverTime(resDict, dMP)
     for i=1:length(mAS)
         ax[i].plot(1:48, dPlot2[:, i+1], label=namesAS[i])
         ax[i].fill_between(
-            1:48, dPlot2[:, i+4], dPlot2[:, i+7],
+            1:length(mAS[1]), dPlot2[:, i+4], dPlot2[:, i+7],
             alpha=0.5, color="C1", label="10th-90th Percentile")
         ax[i].set_xticks([0, 20, 40])
         ax[i].set_xticklabels(["2014/12", "2016/08", "2018/04"])
@@ -685,53 +715,99 @@ function plotAmenityScoresOverTime(resDict, dMP)
     end
     plt.suptitle("Evolution of mean component amenity scores of transacted flats over time")
     plt.savefig(git * "make_data/amenityScoresOverTime.png", dpi=300)
+end
 
+"Plots amenity scores for 3 chosen flats over time"
+function plotFlatAmenityScoreOverTime(dfP)
+    flatDict = Dict{Int64, DataFrame}()
+    postcodes = [50034, 120507, 520283]
+    amenities = [:sHawker, :sSuper, :sMRT]
+    amenityNames = ["Hawker score", "Supermarket score", "MRT score"]
+    for i=1:length(postcodes)
+        flatDict[i] = @as x dfP[dfP.postal_code .== postcodes[i], :] unique(x, :month)
+    end
+    
+    fig, ax = plt.subplots(3, 3, figsize=(12, 12))
+    for i=1:length(postcodes), k=1:3
+        ax[k, i].plot(1:size(flatDict[i], 1), flatDict[i][amenities[k]], label=amenityNames[k])
+        ax[k, i].legend()
+    end
+    plt.suptitle("Amenity score plots over time for \n" *
+                 "$(flatDict[1].block[1]) $(flatDict[1].street_name[1]), i.e. $(postcodes[1]) (left),\n" *
+                 "$(flatDict[2].block[1]) $(flatDict[2].street_name[1]), i.e. $(postcodes[2]) (centre),\n" *
+                 "and $(flatDict[3].block[1]) $(flatDict[3].street_name[1]), i.e. $(postcodes[3]) (right)")
+    plt.tight_layout()
+    plt.savefig(git * "make_data/amenityScorePlotsFor3Flats.png", dpi=300)
     
 end
+
 
 
 "Plots evolution of amenity score weights over time"
-function plotWeightsOverTime(bsDict, dMP)
-    # plot evolution of amenity score weights over time: mean ("base"), frac old, frac young
-    mASB = [(Dict(s => bsDict[s][:β][:, 3+3i] for s in levels(keys(bsDict))) |> DataFrame |> Array)
-           for i=1:3]
-    mASO = [(Dict(s => bsDict[s][:β][:, 3+3i+1] for s in levels(keys(bsDict))) |> DataFrame |> Array)
-            for i=1:3]
-    mASY = [(Dict(s => bsDict[s][:β][:, 3+3i+2] for s in levels(keys(bsDict))) |> DataFrame |> Array)
-            for i=1:3]
-
-    # evaluate score weights at mean level of `fracOld` and `fracYoung`
-    mASW = Vector{Matrix{Float64}}()
-    for i=1:3
-        push!(mASW, mASB[i] .+ mASO[i] .* mean(dMP.fracYoung) .+ mASY[i] .* mean(dMP.fracYoung))
-    end
+function plotWeightsOverTime(resDict, dfP;
+                             bsDict=nothing, bootstrapped=false,
+                             output_file_name="/Users/kwokhao/Desktop/ASWeights.png")
     
+    mASW = Vector{Matrix{Float64}}()
     namesASW = ["Hawker Weight", "Supermarket Weight", "MRT Weight"]
+    
+    # plot evolution of amenity score weights over time (bootstrapped)
+    if bootstrapped & !isnothing(bsDict)
+        mASB = [(Dict(s => bsDict[s][:β][:, 3+3i] for s in levels(keys(bsDict))) |> DataFrame |> Array)
+               for i=1:3]
+        mASO = [(Dict(s => bsDict[s][:β][:, 3+3i+1] for s in levels(keys(bsDict))) |> DataFrame |> Array)
+                for i=1:3]
+        mASY = [(Dict(s => bsDict[s][:β][:, 3+3i+2] for s in levels(keys(bsDict))) |> DataFrame |> Array)
+                for i=1:3]
+    
+        # evaluate score weights at mean level of `fracOld` and `fracYoung`
+        for i=1:3
+            push!(mASW, mASB[i] .+ mASO[i] .* mean(dfP.fracYoung) .+ mASY[i] .* mean(dfP.fracYoung))
+        end
+    
+        fig, ax = plt.subplots(1, 3, figsize=(12, 4))
+        for i=1:length(mASW)
+            ax[i].plot(1:48, mean(mASW[i], dims=2), label=namesASW[i])
+            ax[i].fill_between(
+                1:48, quantile.(eachrow(mASW[i]), 0.1), quantile.(eachrow(mASW[i]), 0.9),
+                alpha=0.5, color="C1")
+            ax[i].set_xticks([0, 20, 40])
+            ax[i].set_xticklabels(["2014/12", "2016/08", "2018/04"])
+            ax[i].legend()
+        end
+    else
+        # plot evolution of amenity score weights using main data
+        vASB = [resDict[:β][:, 3+3i] for i=1:3]
+        vASO = [resDict[:β][:, 3+3i+1] for i=1:3]
+        vASY = [resDict[:β][:, 3+3i+2] for i=1:3]
+        vASW = [vASB[i] .+ vASO[i] .* mean(dfP.fracYoung) .+ vASY[i] .* mean(dfP.fracYoung) for i=1:3]
 
-    fig, ax = plt.subplots(1, 3, figsize=(12, 4))
-    for i=1:length(mASW)
-        ax[i].plot(1:48, mean(mASW[i], dims=2), label=namesASW[i])
-        ax[i].fill_between(
-            1:48, quantile.(eachrow(mASW[i]), 0.1), quantile.(eachrow(mASW[i]), 0.9),
-            alpha=0.5, color="C1")
-        ax[i].set_xticks([0, 20, 40])
-        ax[i].set_xticklabels(["2014/12", "2016/08", "2018/04"])
-        ax[i].legend()
+        fig, ax = plt.subplots(1, 3, figsize=(12, 4))
+        for i=1:length(vASW)
+            ax[i].plot(1:length(vASW[1]), vASW[i], label=namesASW[i])
+            ax[i].set_xticks([0, 20, 40])
+            ax[i].set_xticklabels(["2014/12", "2016/08", "2018/04"])
+            ax[i].legend()
+        end
     end
-    plt.suptitle("Evolution of amenity score weights over time, \n" *
+    plt.suptitle("Evolution of amenity score weights α over time, \n" *
                  "evaluated at mean fractions of old and young in each HDB block")
-    plt.savefig(git * "make_data/ASWeightOverTime.png", dpi=300)
-
+    plt.savefig(output_file_name, dpi=300)
+    
+    nothing
 end
 
-"Main function generating plots"
-function _generatePlots(resDict, bsDict, dM)
-    dMP = @where(dM, :month .>= Date(2015, 3)) |> copy
-    plotFitPlot(resDict[:pHat], dMP, isDataFrame=true, output=true, kde=false)
-    regressionValidityPlots(dMP.p, resDict[:pHat], resDict[:xHat])
+
+"Main function generating plots. Assumes # of testing months is 1 for now."
+function generatePlots(resDict, df, monthRange; bsDict=nothing, n_training_months=2)
+    testMonthRange = monthRange .+ Month(n_training_months)
+    dfP = @where(df, :month .∈ [testMonthRange]) |> copy
+    
+    plotFitPlot(resDict[:pHat], dfP, isDataFrame=true, output=true, kde=false)
+    regressionValidityPlots(dfP.p, resDict[:pHat], resDict[:xHat])
     plotAmenityScoreKDE(resDict)
-    plotAmenityScoreByLocation(resDict, dMP)
-    plotWeightsOverTime(bsDict, dMP)
+    plotAmenityScoreByLocation(resDict, dfP)
+    plotWeightsOverTime(resDict, dfP, bsDict=bsDict)
 end
 
 ###
@@ -739,7 +815,18 @@ end
 ###
 
 function main()
-    resDict, bsDict = _runWindowRegression(dM, bootstrap=true)
+    df, ds, dh, dm, dD, hDict = loadData()
+    ip = inputStruct(dh=dh, ds=ds, dm=dm, hDict=hDict)
+    resDict, monthRange = predictAmenityScore(
+        df, ip, training_start_date=Date(2015, 1),
+        n_training_months=2, n_testing_months=1, bootstrap=false)
+    
+    # output data
+    genOutputCSV(df, resDict, monthRange,
+                 n_training_months=2, output_file_name="/Users/kwokhao/Desktop/amenityscores.csv")
+    # save plots
+    generatePlots(resDict, df, monthRange, n_training_months=2)
+    
 end
 
 
@@ -749,18 +836,18 @@ end
 
 "Plots time-series variation in resale prices by flat size, for 3-room, 4-room
 and 5-room flats."
-function plotTSVarResalePrices(dM)
-    dTS = @> dM begin
+function plotTSVarResalePrices(df)
+    dTS = @> df begin
         groupby([:month, :flat_type])
         combine(:p .=> [mean, z -> quantile(z, 0.1), z -> quantile(z, 0.9)] .=> [:p_mean, :p10, :p90])
     end
-    
+
     gdTS = @> dTS begin
         @where(:flat_type .∈ [["3 ROOM", "4 ROOM", "5 ROOM"]])
         groupby(:flat_type)
     end
-    
-    fig, ax = plt.subplots(1, 3, figsize=(18, 6))    
+
+    fig, ax = plt.subplots(1, 3, figsize=(18, 6))
     for i=1:3
         grp = gdTS[i]
         ax[i].plot(1:length(grp.month), grp.p_mean, label="Mean price, $(grp.flat_type[1])")
