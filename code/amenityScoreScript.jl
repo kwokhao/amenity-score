@@ -527,7 +527,7 @@ function plotFitPlot(model, data; isDataFrame=false, kde=false,
 
     # plot fit correlations
     if isDataFrame
-        sns.scatterplot(model, data.p, style=data.flat_type,
+        sns.scatterplot(x=model, y=data.p, style=data.flat_type,
                         hue=data.flat_type, alpha=0.2, ax=ax[2])
     else
         ax[2].scatter(data, model, alpha=0.05, s=10,
@@ -547,8 +547,7 @@ function plotFitPlot(model, data; isDataFrame=false, kde=false,
                  "and associated scatter plot (right)")
     plt.tight_layout()
     output && plt.savefig(
-        output_directory * "$(Date(Dates.now()))amenityscore_fitplot_" *
-        """$(replace(customlabel, " " => "_")).png""", dpi=300)
+        output_directory * "$(Date(Dates.now()))amenityscore_fitplot.png", dpi=300)
     plt.close()
     
     nothing

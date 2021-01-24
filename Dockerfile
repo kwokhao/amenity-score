@@ -11,32 +11,29 @@ RUN ln -s /opt/julia-1.5.3/bin/julia /usr/local/bin/julia
 RUN rm julia-1.5.3-linux-x86_64.tar.gz  # cleanup
 
 # 1b. install Python packages
-RUN pip3 install numpy matplotlib seaborn pandas statsmodels geopandas contextily
+RUN pip3 install numpy matplotlib seaborn pandas statsmodels geopandas contextily descartes
 
 # 1c. clone the amenity score git repository
 RUN git clone https://github.com/kwokhao/amenity-score.git
-RUN cd amenity-score/code
+
+# 1d. install gpg to decrypt HDB demographics file (encode: gpg -c demog.csv)
+RUN apt-get install -y gpg
+COPY password.txt /amenity-score/
+RUN cd amenity-score/
+RUN PWD=`cat password.txt`
+RUN gpg --batch --passphrase ${PWD} -d make_data/demog.csv.gpg > make_data/cleanedHDBDemographics.csv
+RUN rm make_data/demog.csv.gpg  # cleanup
 
 # 1d. install Julia packages (do this after Python)
+RUN cd code/
 RUN julia install.jl
 
-# 1e. install gpg to decrypt HDB demographics file (encode: gpg -c demog.csv)
-RUN apt-get install -y gpg
-RUN PWD=`cat ../password.txt`
-RUN gpg --batch --passphrase ${PWD} -d ../make_data/demog.csv.gpg > ../make_data/cleanedHDBDemographics.csv
-
-
-# 2. import functions
+# 2. import functions and run the script directly
 RUN julia run.jl
 
-# to copy images: docker cp $container_id:$source_path $destination_path
+# 3. to copy images and csv: docker cp $container_id:/amenity-score/make_data $destination_path
+# find the container id: container_id=`docker ps -aq | head -n 1`
 
 
-# COPY tele-df_actual.py KiasuAgent-a4f9a50e5c83.json kiasuagent-tejnjc-a04ac97efee3.json /
-# COPY tele-df_actual.py SIT-RCD-2020-dialogflow-3314.json /
-# RUN pip install telepot
-# RUN pip install dialogflow
-# RUN pip install google-api-core
-# RUN pip install python-google-places
-# RUN pip install google-cloud-bigquery
+# MISCELLANEOUS SAMPLE CODE (ignore):
 # CMD [ "python", "./tele-df_actual.py" ]
