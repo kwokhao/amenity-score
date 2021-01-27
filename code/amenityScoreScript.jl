@@ -596,7 +596,7 @@ function regressionValidityPlots(p, fitted, X; output_directory=make_data_path)
     ax[2, 1].set_title("Scale-Location")
 
     # 4. residual-leverage plot. To avoid inverting a large matrix, sample 5000 entries
-    usePerm = randperm(MersenneTwister(1234), size(X, 1))[1:5000]
+    usePerm = randperm(MersenneTwister(1234), size(X, 1))[1:(size(X,1) ÷ 10)]
     eS = e_std[usePerm]
     XS = X[usePerm, :]
     lev = XS*inv(XS'XS)*XS' |> diag
@@ -670,7 +670,7 @@ function plotAmenityScoreByLocation(resDict, dfP;
 
     fig, ax = plt.subplots(figsize=(12, 8))
     sg.plot(ax=ax, alpha=0.0)  # to get correct dimensions for Singapore map
-    gdfP.plot(column="super", legend=true, ax=ax,
+    gdfP.plot(column=(weighted ? "wSuper" : "super"), legend=true, ax=ax,
               alpha=0.05, markersize=10)
     ctx.add_basemap(ax=ax, crs=4326)
     plt.suptitle("""Predicted $(weighted ? "Weighted " : "")Supermarket Amenity Score""")
@@ -680,7 +680,7 @@ function plotAmenityScoreByLocation(resDict, dfP;
 
     fig, ax = plt.subplots(figsize=(12, 8))
     sg.plot(ax=ax, alpha=0.0)  # to get correct dimensions for Singapore map
-    gdfP.plot(column="mrt", legend=true, ax=ax,
+    gdfP.plot(column=(weighted ? "wMRT" : "mrt"), legend=true, ax=ax,
               alpha=0.05, markersize=10)
     ctx.add_basemap(ax=ax, crs=4326)
     plt.suptitle("""Predicted $(weighted ? "Weighted " : "")MRT Amenity Score""")
@@ -708,12 +708,15 @@ function plotAmenityScoresOverTime(resDict, dfP, monthRange; output_directory=ma
         ax[i].fill_between(
             1:length(monthRange), dPlot2[:, i+4], dPlot2[:, i+7],
             alpha=0.5, color="C1", label="10th-90th Percentile")
-        ax[i].set_xticks([0, 20, 40])
-        ax[i].set_xticklabels(["2014/12", "2016/08", "2018/04"])
+        # ax[i].set_xticks([0, 20, 40])
+        # ax[i].set_xticklabels(["2014/12", "2016/08", "2018/04"])
         ax[i].legend()
     end
     plt.suptitle("Evolution of mean component amenity scores of transacted flats over time")
     plt.savefig(output_directory * "amenityScoresOverTime.png", dpi=300)
+    plt.close()
+
+    nothing
 end
 
 
@@ -724,12 +727,12 @@ function plotFlatAmenityScoreOverTime(dfP; output_directory=make_data_path)
     amenities = [:sHawker, :sSuper, :sMRT]
     amenityNames = ["Hawker score", "Supermarket score", "MRT score"]
     for i=1:length(postcodes)
-        flatDict[i] = @as x dfP[dfP.postal_code .== postcodes[i], :] unique(x, :month)
+        flatDict[i] = @> dfP @where(:postal_code .== postcodes[i]) unique(:month)
     end
     
     fig, ax = plt.subplots(3, 3, figsize=(12, 12))
     for i=1:length(postcodes), k=1:3
-        ax[k, i].plot(1:size(flatDict[i], 1), flatDict[i][amenities[k]], label=amenityNames[k])
+        ax[k, i].plot(1:size(flatDict[i], 1), flatDict[i][!, amenities[k]], label=amenityNames[k])
         ax[k, i].legend()
     end
     plt.suptitle("Amenity score plots over time for \n" *
@@ -738,13 +741,15 @@ function plotFlatAmenityScoreOverTime(dfP; output_directory=make_data_path)
                  "and $(flatDict[3].block[1]) $(flatDict[3].street_name[1]), i.e. $(postcodes[3]) (right)")
     plt.tight_layout()
     plt.savefig(output_directory * "amenityScorePlotsFor3Flats.png", dpi=300)
+    plt.close()
     
+    nothing
 end
 
 
 
 "Plots evolution of amenity score weights over time"
-function plotWeightsOverTime(resDict, dfP;
+function plotWeightsOverTime(resDict, dfP, monthRange;
                              bsDict=nothing, bootstrapped=false,
                              output_directory=make_data_path)
     
@@ -767,12 +772,12 @@ function plotWeightsOverTime(resDict, dfP;
     
         fig, ax = plt.subplots(1, 3, figsize=(12, 4))
         for i=1:length(mASW)
-            ax[i].plot(1:48, mean(mASW[i], dims=2), label=namesASW[i])
+            ax[i].plot(1:length(monthRange), mean(mASW[i], dims=2), label=namesASW[i])
             ax[i].fill_between(
-                1:48, quantile.(eachrow(mASW[i]), 0.1), quantile.(eachrow(mASW[i]), 0.9),
+                1:length(monthRange), quantile.(eachrow(mASW[i]), 0.1), quantile.(eachrow(mASW[i]), 0.9),
                 alpha=0.5, color="C1")
-            ax[i].set_xticks([0, 20, 40])
-            ax[i].set_xticklabels(["2014/12", "2016/08", "2018/04"])
+            # ax[i].set_xticks([0, 20, 40])
+            # ax[i].set_xticklabels(["2014/12", "2016/08", "2018/04"])
             ax[i].legend()
         end
     else
@@ -785,14 +790,15 @@ function plotWeightsOverTime(resDict, dfP;
         fig, ax = plt.subplots(1, 3, figsize=(12, 4))
         for i=1:length(vASW)
             ax[i].plot(1:length(vASW[1]), vASW[i], label=namesASW[i])
-            ax[i].set_xticks([0, 20, 40])
-            ax[i].set_xticklabels(["2014/12", "2016/08", "2018/04"])
+            # ax[i].set_xticks([0, 20, 40])
+            # ax[i].set_xticklabels(["2014/12", "2016/08", "2018/04"])
             ax[i].legend()
         end
     end
     plt.suptitle("Evolution of amenity score weights α over time, \n" *
                  "evaluated at mean fractions of old and young in each HDB block")
     plt.savefig(output_directory * "$(Date(Dates.now()))ASWeights.png", dpi=300)
+    plt.close()
     
     nothing
 end
@@ -817,8 +823,8 @@ function generatePlots(resDict, df, monthRange; bsDict=nothing, n_training_month
     plotAmenityScoreByLocation(resDict, dfP, output_directory=output_directory)
     plotAmenityScoreByLocation(resDict, dfP, output_directory=output_directory, weighted=true)
     plotAmenityScoresOverTime(resDict, dfP, monthRange, output_directory=output_directory)
-    # plotFlatAmenityScoreOverTime(dfP, output_directory=output_directory)
-    plotWeightsOverTime(resDict, dfP,
+    plotFlatAmenityScoreOverTime(dfP, output_directory=output_directory)
+    plotWeightsOverTime(resDict, dfP, monthRange,
                         bsDict=bsDict, output_directory=output_directory)
 end
 
