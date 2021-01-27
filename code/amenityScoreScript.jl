@@ -49,15 +49,22 @@ subzonePath = git *
     "MP14_SUBZONE_NO_SEA_PL.shp"
 
 "Imports the relevant data frames."
-function loadData(; data_path=data_path)
+function loadData(; data_path=data_path,
+                  make_data_path=make_data_path,
+                  hawker_subpath="hawker-centres/hawkersCleaned.csv",
+                  supermarket_subpath="supermarkets/supermarketsCleaned.csv",
+                  mrt_subpath="MRTStationCoords.csv",
+                  resale_subpath="Apr012020_FlatsMerged2015-.csv",
+                  demographics_subpath="cleanedHDBDemographics.csv"
+                  )
     # import relevant data frames
-    dh = load(data_path * "hawker-centres/hawkersCleaned.csv") |> DataFrame
-    ds = load(data_path * "supermarkets/supermarketsCleaned.csv") |> DataFrame
-    dm = load(data_path * "MRTStationCoords.csv") |> DataFrame
+    dh = load(data_path * hawker_subpath) |> DataFrame
+    ds = load(data_path * supermarket_subpath) |> DataFrame
+    dm = load(data_path * mrt_subpath) |> DataFrame
     # explicitly label `block` as String, else throws error
-    df = CSV.File(data_path * "Apr012020_FlatsMerged2015-.csv",
+    df = CSV.File(data_path * resale_subpath,
                      types=Dict(:block => String)) |> DataFrame
-    dD = load(make_data_path * "cleanedHDBDemographics.csv") |> DataFrame
+    dD = load(make_data_path * demographics_subpath) |> DataFrame
     dD = @> dD @select(:postal_code, :fracOld, :fracYoung) unique
     
     # rename postal code, merge with demographic data, drop missing entries
@@ -632,7 +639,9 @@ end
 
 "Coerces component amenity scores by location into a pandas dataframe and plots
 them on the Singapore map."
-function plotAmenityScoreByLocation(resDict, dfP; output_directory=make_data_path)
+function plotAmenityScoreByLocation(resDict, dfP;
+                                    output_directory=make_data_path, weighted=false)
+    
     hawkerscore = resDict[:xHat][:, 6]
     superscore = resDict[:xHat][:, 9]
     mrtscore = resDict[:xHat][:, 12]
@@ -643,17 +652,20 @@ function plotAmenityScoreByLocation(resDict, dfP; output_directory=make_data_pat
                                  "size" => dfP.flat_type,
                                  "hawker" => hawkerscore,
                                  "super" => superscore,
-                                 "mrt" => mrtscore),
+                                 "mrt" => mrtscore,
+                                 "wHawker" => dfP.aHawker .* hawkerscore,
+                                 "wSuper" => dfP.aSuper .* superscore,
+                                 "wMRT" => dfP.aMRT .* mrtscore),
                             geometry=gpd.points_from_xy(dfP.LON, dfP.LAT), crs="epsg:4326")
 
     fig, ax = plt.subplots(figsize=(12, 8))
     sg.plot(ax=ax, alpha=0.0)  # to get correct dimensions for Singapore map
-    gdfP.plot(column="hawker", legend=true, ax=ax,
+    gdfP.plot(column=(weighted ? "wHawker" : "hawker"), legend=true, ax=ax,
               alpha=0.05, markersize=10)
     ctx.add_basemap(ax=ax, crs=4326)
-    plt.suptitle("Predicted Hawker Amenity Score")
+    plt.suptitle("""Predicted $(weighted ? "Weighted " : "")Hawker Amenity Score""")
     plt.tight_layout()
-    plt.savefig(output_directory * "hawkerAmenityScore.png", dpi=300)
+    plt.savefig(output_directory * """hawkerAmenityScore$(weighted ? "W" : "").png""", dpi=300)
     plt.close()
 
     fig, ax = plt.subplots(figsize=(12, 8))
@@ -661,9 +673,9 @@ function plotAmenityScoreByLocation(resDict, dfP; output_directory=make_data_pat
     gdfP.plot(column="super", legend=true, ax=ax,
               alpha=0.05, markersize=10)
     ctx.add_basemap(ax=ax, crs=4326)
-    plt.suptitle("Predicted Supermarket Amenity Score")
+    plt.suptitle("""Predicted $(weighted ? "Weighted " : "")Supermarket Amenity Score""")
     plt.tight_layout()
-    plt.savefig(output_directory * "superAmenityScore.png", dpi=300)
+    plt.savefig(output_directory * """superAmenityScore$(weighted ? "W" : "").png""", dpi=300)
     plt.close()
 
     fig, ax = plt.subplots(figsize=(12, 8))
@@ -671,16 +683,16 @@ function plotAmenityScoreByLocation(resDict, dfP; output_directory=make_data_pat
     gdfP.plot(column="mrt", legend=true, ax=ax,
               alpha=0.05, markersize=10)
     ctx.add_basemap(ax=ax, crs=4326)
-    plt.suptitle("Predicted MRT Amenity Score")
+    plt.suptitle("""Predicted $(weighted ? "Weighted " : "")MRT Amenity Score""")
     plt.tight_layout()
-    plt.savefig(output_directory * "mrtAmenityScore.png", dpi=300)
+    plt.savefig(output_directory * """mrtAmenityScore$(weighted ? "W" : "").png""", dpi=300)
     plt.close()
 
     nothing
 end
 
 "Plots evolution of component amenity scores over time, on aggregate"
-function plotAmenityScoresOverTime(resDict, dfP; output_directory=make_data_path)
+function plotAmenityScoresOverTime(resDict, dfP, monthRange; output_directory=make_data_path)
     mAS = [resDict[:xHat][:, 3+3i] for i=1:3]
     namesAS = ["HawkerScore", "SupermarketScore", "MRTScore"]
 
@@ -692,9 +704,9 @@ function plotAmenityScoresOverTime(resDict, dfP; output_directory=make_data_path
         h90=quantile(:HawkerScore, 0.9), s90=quantile(:SupermarketScore, 0.9), m90=quantile(:MRTScore, 0.9))
     fig, ax = plt.subplots(1, 3, figsize=(12, 4))
     for i=1:length(mAS)
-        ax[i].plot(1:48, dPlot2[:, i+1], label=namesAS[i])
+        ax[i].plot(1:length(monthRange), dPlot2[:, i+1], label=namesAS[i])
         ax[i].fill_between(
-            1:length(mAS[1]), dPlot2[:, i+4], dPlot2[:, i+7],
+            1:length(monthRange), dPlot2[:, i+4], dPlot2[:, i+7],
             alpha=0.5, color="C1", label="10th-90th Percentile")
         ax[i].set_xticks([0, 20, 40])
         ax[i].set_xticklabels(["2014/12", "2016/08", "2018/04"])
@@ -703,6 +715,7 @@ function plotAmenityScoresOverTime(resDict, dfP; output_directory=make_data_path
     plt.suptitle("Evolution of mean component amenity scores of transacted flats over time")
     plt.savefig(output_directory * "amenityScoresOverTime.png", dpi=300)
 end
+
 
 "Plots amenity scores for 3 chosen flats over time"
 function plotFlatAmenityScoreOverTime(dfP; output_directory=make_data_path)
@@ -789,7 +802,12 @@ end
 function generatePlots(resDict, df, monthRange; bsDict=nothing, n_training_months=2,
                        output_directory=make_data_path)
     testMonthRange = monthRange .+ Month(n_training_months)
-    dfP = @where(df, :month .∈ [testMonthRange]) |> copy
+    dfP = @> df begin
+        @where(:month .∈ [testMonthRange])
+        copy
+        augmentDf(resDict, monthRange, n_training_months=n_training_months)
+    end
+    
     
     plotFitPlot(resDict[:pHat], dfP, isDataFrame=true,
                 output=true, kde=false, output_directory=output_directory)
@@ -797,6 +815,9 @@ function generatePlots(resDict, df, monthRange; bsDict=nothing, n_training_month
                             output_directory=output_directory)
     plotAmenityScoreKDE(resDict, output_directory=output_directory)
     plotAmenityScoreByLocation(resDict, dfP, output_directory=output_directory)
+    plotAmenityScoreByLocation(resDict, dfP, output_directory=output_directory, weighted=true)
+    plotAmenityScoresOverTime(resDict, dfP, monthRange, output_directory=output_directory)
+    # plotFlatAmenityScoreOverTime(dfP, output_directory=output_directory)
     plotWeightsOverTime(resDict, dfP,
                         bsDict=bsDict, output_directory=output_directory)
 end
@@ -805,14 +826,30 @@ end
 # MAIN FUNCTION
 ###
 
-function main(; output_directory=make_data_path)
+function main(; input_data_path=data_path, output_directory=make_data_path,
+              training_start_date=Date(2015, 1),
+              n_training_months=2, n_testing_months=1,
+              hawker_subpath="hawker-centres/hawkersCleaned.csv",
+              supermarket_subpath="supermarkets/supermarketsCleaned.csv",
+              mrt_subpath="MRTStationCoords.csv",
+              resale_subpath="Apr012020_FlatsMerged2015-.csv",
+              demographics_subpath="cleanedHDBDemographics.csv")
+
     println("Loading data...")
-    df, ds, dh, dm, dD, hDict = loadData()
+    df, ds, dh, dm, dD, hDict = loadData(data_path=input_data_path,
+                                         make_data_path=output_directory,
+                                         hawker_subpath=hawker_subpath,
+                                         supermarket_subpath=supermarket_subpath,
+                                         mrt_subpath=mrt_subpath,
+                                         resale_subpath=resale_subpath,
+                                         demographics_subpath=demographics_subpath)
+    
     ip = inputStruct(dh=dh, ds=ds, dm=dm, hDict=hDict)
     println("Predicting amenity score...")
     resDict, monthRange = predictAmenityScore(
-        df, ip, training_start_date=Date(2015, 1),
-        n_training_months=2, n_testing_months=1, bootstrap=false)
+        df, ip, training_start_date=training_start_date,
+        n_training_months=n_training_months, n_testing_months=n_testing_months,
+        bootstrap=false)
     
     # output data
     println("Generating output CSV...")
